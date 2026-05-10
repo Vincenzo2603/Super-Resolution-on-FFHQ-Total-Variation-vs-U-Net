@@ -1,0 +1,766 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{float}
+\usepackage[a4paper, margin=2.5cm]{geometry}
+
+\title{Super Resolution su immagini FFHQ: confronto tra Total Variation e U-Net}
+\author{Vincenzo Lombardi}
+\date{May 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduzione}
+
+Negli ultimi anni, il \textit{Computational Imaging} ha assunto un ruolo sempre più centrale in numerosi ambiti applicativi, tra cui imaging medico, fotografia computazionale, microscopia e telerilevamento. In questi contesti, l’obiettivo principale consiste nel ricostruire o migliorare un’immagine a partire da osservazioni indirette, incomplete o degradate, sfruttando modelli matematici e algoritmi di ottimizzazione avanzati.
+
+Molti problemi di imaging possono essere formulati come \textit{inverse problems}, nei quali si vuole stimare un’immagine incognita ad alta qualità a partire da una misura osservata affetta da degradazione e rumore. In forma generale, il problema può essere espresso come:
+
+\[
+y = Ax + n
+\]
+
+dove \(x\) rappresenta l’immagine originale ad alta risoluzione, \(A\) è l’operatore di degradazione (ad esempio downsampling, blur o compressione), \(y\) è l’osservazione disponibile e \(n\) rappresenta il rumore additivo, spesso modellato come rumore gaussiano.
+
+Tra i problemi inversi più rilevanti nel contesto dell’elaborazione di immagini, la \textit{Super Resolution} (SR) riveste particolare importanza. Essa consiste nel ricostruire un’immagine ad alta risoluzione (\textit{High Resolution}, HR) a partire da una versione a bassa risoluzione (\textit{Low Resolution}, LR), cercando di recuperare dettagli fini, texture e strutture che risultano parzialmente o totalmente perse durante il processo di degradazione.
+
+La Super Resolution rappresenta un problema fortemente mal posto (\textit{ill-posed}), poiché molte immagini HR differenti possono generare la stessa osservazione LR. Per questo motivo, la sola inversione dell’operatore di degradazione non è sufficiente e risulta necessario introdurre informazioni a priori sulla soluzione desiderata attraverso tecniche di regolarizzazione.
+
+Tradizionalmente, questo approccio viene affrontato mediante metodi \textit{model-based}, nei quali la soluzione viene ottenuta minimizzando una funzione obiettivo composta da un termine di fedeltà ai dati e un termine di regolarizzazione:
+
+\[
+\hat{x} =
+\arg\min_x
+\left\{
+\|Ax - y\|^2 + \lambda R(x)
+\right\}
+\]
+
+dove \(R(x)\) rappresenta il termine di regolarizzazione e \(\lambda\) ne controlla il peso. Tra le regolarizzazioni più utilizzate vi è la \textit{Total Variation} (TV), particolarmente efficace nel preservare i bordi e ridurre il rumore, pur presentando il limite di produrre talvolta un eccessivo effetto di oversmoothing.
+
+Parallelamente, negli ultimi anni, i metodi basati su \textit{Deep Learning} hanno mostrato risultati molto competitivi nella risoluzione di problemi inversi. In particolare, architetture neurali come la \textit{U-Net} permettono di apprendere direttamente una mappatura tra immagine degradata e immagine ricostruita, sfruttando grandi quantità di dati di training e una struttura encoder-decoder con connessioni skip che favoriscono il recupero dei dettagli spaziali.
+
+In questo progetto viene affrontato il problema della Super Resolution sul dataset FFHQ (\textit{Flickr-Faces-HQ}), costituito da immagini facciali ad alta qualità e risoluzione \(256 \times 256\). L’obiettivo è confrontare due approcci differenti:
+
+\begin{itemize}
+    \item un metodo variazionale basato su \textit{Total Variation Regularization};
+    \item un metodo \textit{End-to-End} basato su architettura \textit{U-Net}.
+\end{itemize}
+
+Le immagini vengono degradate utilizzando due fattori di super-risoluzione (\(\times 2\) e \(\times 4\)) e due livelli di rumore gaussiano (\(\sigma = 0.005\) e \(\sigma = 0.01\)), mantenendo le stesse condizioni sperimentali per entrambi i metodi al fine di garantire un confronto equo.
+
+Le prestazioni vengono valutate sia dal punto di vista quantitativo, mediante le metriche PSNR (\textit{Peak Signal-to-Noise Ratio}) e SSIM (\textit{Structural Similarity Index}), sia dal punto di vista qualitativo attraverso il confronto visivo delle immagini ricostruite.
+
+L’obiettivo finale del lavoro è analizzare vantaggi, limiti e comportamento dei due approcci, evidenziando come, in determinati contesti applicativi, i metodi variazionali classici possano ancora risultare estremamente competitivi rispetto a soluzioni deep learning più complesse.
+
+\newpage
+\section{Formulazione del Problema}
+
+Il problema della \textit{Super Resolution} può essere formalizzato come un problema inverso di ricostruzione, nel quale si desidera stimare un’immagine ad alta risoluzione a partire da una sua osservazione degradata a bassa risoluzione.
+
+Dal punto di vista matematico, il modello di acquisizione può essere espresso come:
+
+\[
+y = Ax + n
+\]
+
+dove:
+
+\begin{itemize}
+    \item \(x \in \mathbb{R}^{N}\) rappresenta l’immagine originale ad alta risoluzione (\textit{High Resolution}, HR);
+    \item \(y \in \mathbb{R}^{M}\) rappresenta l’immagine osservata a bassa risoluzione (\textit{Low Resolution}, LR), con \(M < N\);
+    \item \(A\) è l’operatore di degradazione che modella il processo di downsampling e, eventualmente, ulteriori effetti di blur;
+    \item \(n\) rappresenta il rumore additivo, assunto in questo progetto come rumore gaussiano bianco (\textit{Additive White Gaussian Noise}, AWGN).
+\end{itemize}
+
+Nel caso specifico di questo lavoro, l’operatore \(A\) consiste principalmente in una riduzione di risoluzione (\textit{downsampling}) con fattori di scala pari a \(\times 2\) e \(\times 4\), seguita dall’aggiunta di rumore gaussiano con deviazione standard pari a:
+
+\[
+\sigma \in \{0.005,\; 0.01\}
+\]
+
+Successivamente, l’immagine degradata viene riportata alla dimensione originale tramite interpolazione bicubica, in modo da fornire a tutti i metodi confrontati lo stesso input di partenza.
+
+\subsection{Ill-posedness del problema}
+
+La Super Resolution è un problema fortemente mal posto (\textit{ill-posed}), poiché il processo di degradazione comporta una perdita irreversibile di informazione.
+
+In particolare:
+
+\begin{itemize}
+    \item più immagini HR differenti possono produrre la stessa osservazione LR;
+    \item l’operatore \(A\) non è invertibile in modo stabile;
+    \item la presenza di rumore amplifica ulteriormente l’incertezza della ricostruzione.
+\end{itemize}
+
+Di conseguenza, una semplice inversione diretta del modello non è sufficiente a garantire una soluzione accurata e stabile.
+
+Per ottenere una stima affidabile dell’immagine originale è necessario introdurre conoscenza a priori sulla struttura desiderata della soluzione, attraverso opportune tecniche di regolarizzazione.
+
+\subsection{Approccio variazionale}
+
+Uno dei modi più classici per affrontare un problema inverso consiste nella formulazione variazionale, nella quale la soluzione viene ottenuta come minimo di una funzione obiettivo composta da due termini:
+
+\[
+\hat{x}
+=
+\arg\min_x
+\left\{
+\underbrace{\|Ax - y\|^2}_{\text{data fidelity}}
++
+\lambda
+\underbrace{R(x)}_{\text{regularization}}
+\right\}
+\]
+
+Il primo termine, detto \textit{data fidelity}, impone coerenza tra la soluzione ricostruita e i dati osservati, penalizzando differenze elevate tra \(Ax\) e \(y\).
+
+Il secondo termine, detto \textit{regularization}, introduce una prior sulla soluzione e consente di stabilizzare il problema, favorendo immagini più realistiche e meno sensibili al rumore.
+
+Il parametro \(\lambda > 0\) controlla il bilanciamento tra fedeltà ai dati e forza della regolarizzazione:
+
+\begin{itemize}
+    \item valori piccoli privilegiano l’aderenza ai dati osservati;
+    \item valori grandi privilegiano la regolarità della soluzione.
+\end{itemize}
+
+Nel presente progetto, il termine di regolarizzazione scelto per il metodo variazionale è la \textit{Total Variation} (TV), descritta nella sezione successiva.
+
+\subsection{Approccio data-driven}
+
+In alternativa ai metodi model-based, i recenti approcci basati su Deep Learning affrontano il problema della Super Resolution come una mappatura diretta tra input degradato e immagine ricostruita.
+
+In questo caso, una rete neurale convoluzionale apprende dai dati una funzione:
+
+\[
+f_{\theta}(y) \approx x
+\]
+
+dove \(\theta\) rappresenta i parametri della rete ottimizzati durante la fase di training.
+
+Questo approccio non richiede una definizione esplicita del termine di regolarizzazione, poiché la prior viene appresa implicitamente dal dataset di addestramento.
+
+Nel presente lavoro, il metodo data-driven scelto è una rete \textit{U-Net}, descritta in dettaglio nelle sezioni successive.
+
+\newpage
+\section{Metodi Utilizzati}
+
+In questo progetto vengono confrontati due approcci differenti per la risoluzione del problema di Super Resolution:
+
+\begin{itemize}
+    \item un metodo variazionale classico basato su \textit{Total Variation Regularization};
+    \item un metodo \textit{End-to-End} basato su rete neurale convoluzionale di tipo \textit{U-Net}.
+\end{itemize}
+
+L’obiettivo del confronto è analizzare il comportamento di un approccio \textit{model-based}, fondato su una formulazione matematica esplicita del problema inverso, rispetto a un approccio \textit{data-driven}, in cui la ricostruzione viene appresa direttamente dai dati.
+
+\subsection{Metodo variazionale: Total Variation Regularization}
+
+La \textit{Total Variation} (TV) rappresenta una delle tecniche di regolarizzazione più utilizzate nei problemi di image restoration e computational imaging.
+
+L’idea principale consiste nel favorire soluzioni che presentino variazioni spaziali limitate, preservando però i bordi netti e le discontinuità strutturali dell’immagine, che spesso corrispondono a informazioni visivamente rilevanti.
+
+Nel caso della Super Resolution, la ricostruzione viene ottenuta risolvendo il seguente problema di ottimizzazione:
+
+\[
+\hat{x}
+=
+\arg\min_x
+\left\{
+\|Ax - y\|^2
++
+\lambda \, TV(x)
+\right\}
+\]
+
+dove il termine di regolarizzazione TV è definito come:
+
+\[
+TV(x)
+=
+\sum_{i}
+\sqrt{
+(\nabla_h x_i)^2 +
+(\nabla_v x_i)^2
+}
+\]
+
+con:
+
+\begin{itemize}
+    \item \(\nabla_h\): derivata discreta orizzontale;
+    \item \(\nabla_v\): derivata discreta verticale;
+    \item \(x_i\): intensità del pixel \(i\).
+\end{itemize}
+
+Questo termine penalizza forti oscillazioni locali, riducendo il rumore e favorendo immagini più regolari.
+
+\subsubsection{Vantaggi della TV}
+
+I principali vantaggi della regolarizzazione TV sono:
+
+\begin{itemize}
+    \item buona robustezza al rumore gaussiano;
+    \item preservazione dei bordi e dei contorni;
+    \item elevata stabilità numerica;
+    \item interpretabilità teorica del modello;
+    \item costo computazionale relativamente contenuto.
+\end{itemize}
+
+\subsubsection{Limiti della TV}
+
+I principali limiti sono invece:
+
+\begin{itemize}
+    \item effetto di \textit{oversmoothing};
+    \item perdita di texture fini;
+    \item riduzione dei dettagli ad alta frequenza;
+    \item possibile effetto \textit{cartoon-like} nelle regioni uniformi.
+\end{itemize}
+
+Nel presente lavoro, la TV viene applicata all’immagine degradata e riportata alla risoluzione originale tramite interpolazione bicubica, utilizzando il metodo \texttt{denoise\_tv\_chambolle} disponibile nella libreria \texttt{scikit-image}.
+
+Il parametro di regolarizzazione \(\lambda\) viene scelto empiricamente mediante una procedura di \textit{grid search}, analizzando le metriche PSNR e SSIM.
+
+\subsection{Metodo End-to-End: U-Net}
+
+Come secondo approccio è stata utilizzata una rete neurale convoluzionale di tipo \textit{U-Net}, una delle architetture più diffuse nei problemi di image restoration, segmentation e inverse problems.
+
+La U-Net è una rete di tipo \textit{encoder-decoder} con connessioni \textit{skip connections}, introdotta originariamente per la segmentazione di immagini biomedicali ma oggi largamente impiegata anche in problemi di ricostruzione.
+
+L’idea principale consiste nell’apprendere direttamente una funzione di ricostruzione:
+
+\[
+f_{\theta}(y)
+\approx x
+\]
+
+dove:
+
+\begin{itemize}
+    \item \(y\) è l’immagine degradata;
+    \item \(x\) è l’immagine ad alta risoluzione desiderata;
+    \item \(\theta\) rappresenta i parametri della rete.
+\end{itemize}
+
+\subsubsection{Struttura della rete}
+
+La rete U-Net è composta da due parti principali:
+
+\begin{itemize}
+    \item \textbf{Encoder}: estrae progressivamente caratteristiche ad alto livello attraverso convoluzioni e downsampling;
+    \item \textbf{Decoder}: ricostruisce l’immagine finale attraverso upsampling e convoluzioni.
+\end{itemize}
+
+Le \textit{skip connections} collegano direttamente i livelli simmetrici di encoder e decoder, permettendo di preservare informazioni spaziali fini e dettagli locali che altrimenti verrebbero persi durante il downsampling.
+
+Questo aspetto è particolarmente importante nel problema della Super Resolution, dove il recupero di texture e dettagli ad alta frequenza è fondamentale.
+
+\subsubsection{Vantaggi della U-Net}
+
+I principali vantaggi sono:
+
+\begin{itemize}
+    \item capacità di apprendere pattern complessi dai dati;
+    \item migliore ricostruzione di texture fini;
+    \item forte adattabilità al dataset specifico;
+    \item ottime prestazioni in molti problemi di image restoration.
+\end{itemize}
+
+\subsubsection{Limiti della U-Net}
+
+I principali limiti sono:
+
+\begin{itemize}
+    \item necessità di una fase di training costosa;
+    \item forte dipendenza dalla qualità del dataset;
+    \item maggiore sensibilità agli iperparametri;
+    \item minore interpretabilità teorica rispetto ai metodi variazionali.
+\end{itemize}
+
+Nel presente progetto, la rete riceve in input l’immagine degradata già riportata alla dimensione originale tramite interpolazione bicubica e produce direttamente la ricostruzione finale ad alta risoluzione.
+
+L’addestramento viene effettuato minimizzando una loss di tipo MSE (\textit{Mean Squared Error}) tra immagine ricostruita e ground truth.
+
+\newpage
+\section{Implementazione}
+
+In questa sezione vengono descritte le scelte implementative adottate per la realizzazione del progetto, includendo il dataset utilizzato, la procedura di degradazione delle immagini, la preparazione dei dati e i parametri di training dei due metodi confrontati.
+
+Tutte le implementazioni sono state sviluppate in Python utilizzando Google Colab come ambiente di esecuzione, sfruttando principalmente le librerie \texttt{PyTorch}, \texttt{NumPy}, \texttt{OpenCV}, \texttt{scikit-image} e \texttt{matplotlib}.
+
+\subsection{Dataset}
+
+Per gli esperimenti è stato utilizzato il dataset \textit{FFHQ} (\textit{Flickr-Faces-HQ}), costituito da immagini facciali ad alta qualità, largamente impiegato nei problemi di image restoration e generative modeling.
+
+Per il progetto è stata utilizzata la versione con immagini di dimensione:
+
+\[
+256 \times 256
+\]
+
+in formato RGB.
+
+Al fine di mantenere il training computazionalmente sostenibile e coerente con la traccia del progetto, è stato selezionato un sottoinsieme di circa:
+
+\[
+4000 \text{ immagini}
+\]
+
+estratte casualmente dal dataset completo.
+
+\subsection{Suddivisione del dataset}
+
+Il dataset è stato suddiviso in tre sottoinsiemi distinti:
+
+\begin{itemize}
+    \item \textbf{Training set}: 3200 immagini
+    \item \textbf{Validation set}: 400 immagini
+    \item \textbf{Test set}: 400 immagini
+\end{itemize}
+
+La suddivisione è stata effettuata utilizzando una procedura randomizzata con \textit{random seed} fissato per garantire la riproducibilità degli esperimenti.
+
+Il training set viene utilizzato per l’addestramento della U-Net, il validation set per il monitoraggio della loss durante il training e il test set per la valutazione finale delle prestazioni.
+
+\subsection{Preprocessing}
+
+Tutte le immagini sono state preprocessate attraverso i seguenti passaggi:
+
+\begin{itemize}
+    \item conversione in formato RGB;
+    \item ridimensionamento a \(256 \times 256\);
+    \item normalizzazione dei valori di intensità nell’intervallo:
+\[
+[0,1]
+\]
+\end{itemize}
+
+La normalizzazione risulta particolarmente importante sia per la stabilità numerica dei metodi variazionali sia per il corretto training della rete neurale.
+
+\subsection{Modello di degradazione}
+
+Per simulare il problema di Super Resolution, ciascuna immagine ad alta risoluzione viene degradata secondo il seguente processo:
+
+\begin{enumerate}
+    \item downsampling con fattore di scala:
+\[
+\times 2
+\quad \text{oppure} \quad
+\times 4
+\]
+
+    \item aggiunta di rumore gaussiano bianco (\textit{AWGN}) con deviazione standard:
+
+\[
+\sigma
+\in
+\{0.005,\; 0.01\}
+\]
+
+    \item upsampling bicubico fino alla risoluzione originale \(256 \times 256\)
+\end{enumerate}
+
+L’upsampling bicubico non rappresenta una ricostruzione finale, ma viene utilizzato come input comune per entrambi i metodi confrontati, in modo da garantire condizioni sperimentali identiche.
+
+Un esempio di degradazione è mostrato in Figura~\ref{fig:degradation}. Le quattro configurazioni testate sono riportate nella tabella seguente:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{degradation_x4_noise0.01.png}
+    \caption{Esempio di degradazione applicata a un’immagine del test set. A sinistra è mostrata la ground truth, al centro l’input degradato con fattore di super-risoluzione $\times 4$ e rumore gaussiano $\sigma = 0.01$, mentre a destra è riportata la mappa dell’errore assoluto.}
+    \label{fig:degradation}
+\end{figure}
+
+\begin{center}
+\begin{tabular}{cc}
+\hline
+Fattore SR & Livello di rumore \\
+\hline
+$\times 2$ & 0.005 \\
+$\times 2$ & 0.01 \\
+$\times 4$ & 0.005 \\
+$\times 4$ & 0.01 \\
+\hline
+\end{tabular}
+\end{center}
+
+\subsection{Implementazione del metodo TV}
+
+Per il metodo variazionale è stata utilizzata la funzione:
+
+\[
+\texttt{denoise\_tv\_chambolle}
+\]
+
+della libreria \texttt{scikit-image}, che implementa una minimizzazione basata sulla regolarizzazione di Total Variation.
+
+Il parametro principale del metodo è il peso della regolarizzazione:
+
+\[
+\lambda
+\]
+
+che controlla il bilanciamento tra riduzione del rumore e preservazione dei dettagli.
+
+La scelta di tale parametro è stata effettuata empiricamente mediante una procedura di \textit{grid search} sui valori:
+
+\[
+\lambda
+\in
+\{0.02,\; 0.05,\; 0.08,\; 0.12,\; 0.20\}
+\]
+
+Per ogni configurazione di degradazione è stato selezionato il valore che massimizzava le metriche PSNR e SSIM sul validation set.
+
+\subsection{Implementazione della U-Net}
+
+Per il metodo deep learning è stata implementata una U-Net semplificata, composta da:
+
+\begin{itemize}
+    \item blocchi convoluzionali encoder;
+    \item max pooling per il downsampling;
+    \item blocchi decoder con upsampling;
+    \item skip connections tra livelli simmetrici;
+    \item output finale RGB.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{comparison_x2_noise0.005.png}
+    \caption{Esempio di ricostruzione ottenuta dai diversi metodi nel caso $\times 2$ con rumore gaussiano $\sigma = 0.005$. La figura mostra ground truth, input degradato, baseline bicubica, TV e U-Net, evidenziando il tipo di output prodotto dalla rete rispetto ai metodi di confronto.}
+    \label{fig:unet}
+\end{figure}
+
+L’input della rete è costituito dall’immagine degradata e bicubicamente interpolata, mentre l’output è la ricostruzione ad alta risoluzione.
+
+\subsection{Parametri di training}
+
+L’addestramento della rete è stato eseguito utilizzando:
+
+\begin{itemize}
+    \item \textbf{Loss function}: Mean Squared Error (MSE)
+    \item \textbf{Optimizer}: Adam
+    \item \textbf{Learning rate}: \(10^{-3}\)
+    \item \textbf{Batch size}: 8
+    \item \textbf{Epochs}: 3
+\end{itemize}
+
+Per ridurre i tempi computazionali compatibilmente con l’ambiente Colab e con la natura individuale del progetto, il training è stato inizialmente eseguito su un sottoinsieme ridotto del training set.
+
+Questa scelta ha permesso di ottenere risultati confrontabili mantenendo tempi di esecuzione sostenibili, pur limitando parzialmente le prestazioni finali della rete rispetto a un training più esteso.
+
+\newpage
+\section{Esperimenti e Metriche di Valutazione}
+
+L’obiettivo principale degli esperimenti è confrontare le prestazioni dei due metodi selezionati — Total Variation Regularization e U-Net — nel problema di Super Resolution, analizzando sia la qualità quantitativa delle ricostruzioni sia la qualità percettiva delle immagini ottenute.
+
+Per garantire un confronto corretto, tutti i metodi vengono applicati sugli stessi input degradati, ottenuti secondo il modello descritto nella sezione precedente.
+
+\subsection{Configurazioni sperimentali}
+
+Sono state considerate quattro diverse configurazioni di degradazione, ottenute combinando due fattori di super-risoluzione e due livelli di rumore gaussiano:
+
+\begin{center}
+\begin{tabular}{cc}
+\hline
+Fattore di scala & Deviazione standard del rumore \\
+\hline
+$\times 2$ & 0.005 \\
+$\times 2$ & 0.01 \\
+$\times 4$ & 0.005 \\
+$\times 4$ & 0.01 \\
+\hline
+\end{tabular}
+\end{center}
+
+Il caso con fattore \(\times 2\) rappresenta una degradazione moderata, mentre il caso \(\times 4\) risulta significativamente più complesso a causa della maggiore perdita di informazione.
+
+Analogamente, il livello di rumore \(\sigma = 0.01\) introduce una perturbazione più severa rispetto a \(\sigma = 0.005\), rendendo il problema maggiormente instabile.
+
+\subsection{Baseline bicubica}
+
+Prima di applicare i metodi di ricostruzione, viene considerata come baseline la semplice interpolazione bicubica.
+
+In questo caso, l’immagine a bassa risoluzione viene riportata alla dimensione originale senza alcuna procedura di regolarizzazione o apprendimento, utilizzando esclusivamente un algoritmo standard di interpolazione.
+
+La baseline bicubica rappresenta un riferimento fondamentale, poiché permette di valutare il reale contributo dei metodi avanzati rispetto a una soluzione semplice e computazionalmente economica.
+
+Il confronto finale viene quindi effettuato tra:
+
+\begin{itemize}
+    \item Bicubic interpolation
+    \item TV Regularization
+    \item U-Net
+\end{itemize}
+
+\subsection{Metriche quantitative}
+
+Per la valutazione numerica delle prestazioni sono state utilizzate due metriche standard nei problemi di image restoration:
+
+\begin{itemize}
+    \item PSNR (\textit{Peak Signal-to-Noise Ratio})
+    \item SSIM (\textit{Structural Similarity Index Measure})
+\end{itemize}
+
+\subsubsection{PSNR}
+
+Il PSNR misura la differenza pixel-wise tra immagine ricostruita e ground truth, ed è definito come:
+
+\[
+PSNR
+=
+10 \log_{10}
+\left(
+\frac{MAX^2}{MSE}
+\right)
+\]
+
+dove:
+
+\begin{itemize}
+    \item \(MAX\) è il valore massimo dell’intensità (nel nostro caso pari a 1);
+    \item \(MSE\) è il \textit{Mean Squared Error} tra immagine ricostruita e ground truth.
+\end{itemize}
+
+Valori più elevati di PSNR indicano una ricostruzione più accurata.
+
+\subsubsection{SSIM}
+
+Lo SSIM misura la similarità strutturale tra due immagini, considerando luminanza, contrasto e struttura locale.
+
+A differenza del PSNR, lo SSIM è più vicino alla percezione visiva umana e risulta particolarmente utile quando si vogliono valutare qualità percettive e preservazione dei dettagli.
+
+Lo SSIM assume valori nell’intervallo:
+
+\[
+0 \leq SSIM \leq 1
+\]
+
+dove valori più vicini a 1 indicano una maggiore similarità con la ground truth.
+
+\subsection{Valutazione qualitativa}
+
+Oltre alle metriche numeriche, è stata effettuata anche una valutazione qualitativa mediante confronto visivo diretto tra:
+
+\begin{itemize}
+    \item immagine Ground Truth
+    \item immagine degradata
+    \item ricostruzione Bicubic
+    \item ricostruzione TV
+    \item ricostruzione U-Net
+\end{itemize}
+
+Particolare attenzione è stata posta su:
+
+\begin{itemize}
+    \item dettagli del volto;
+    \item occhi e sopracciglia;
+    \item texture della pelle;
+    \item capelli e contorni del viso.
+\end{itemize}
+
+In alcune situazioni sono stati utilizzati anche \textit{crop} locali per evidenziare meglio differenze che sull’intera immagine risultavano meno evidenti.
+
+Questa fase è particolarmente importante, poiché metriche molto vicine possono comunque produrre differenze visive significative.
+
+\subsection{Obiettivo dell’analisi}
+
+L’analisi finale non si limita a identificare il metodo con i valori migliori di PSNR e SSIM, ma mira a comprendere:
+
+\begin{itemize}
+    \item quando un metodo risulta preferibile rispetto all’altro;
+    \item il compromesso tra qualità, stabilità e costo computazionale;
+    \item il ruolo della regolarizzazione classica rispetto agli approcci deep learning.
+\end{itemize}
+
+Questo confronto permette di valutare criticamente se, nel contesto specifico della Super Resolution su immagini facciali, i metodi variazionali tradizionali possano ancora competere con approcci data-driven più complessi.
+
+\newpage
+\section{Risultati Sperimentali}
+
+In questa sezione vengono presentati i risultati ottenuti confrontando i tre approcci considerati:
+
+\begin{itemize}
+    \item interpolazione bicubica (baseline);
+    \item metodo variazionale con Total Variation (TV);
+    \item metodo End-to-End basato su U-Net.
+\end{itemize}
+
+L’analisi viene condotta sia dal punto di vista quantitativo, mediante le metriche PSNR e SSIM, sia dal punto di vista qualitativo attraverso il confronto visivo delle immagini ricostruite.
+
+\subsection{Risultati quantitativi}
+
+La Tabella~\ref{tab:results} riporta i valori medi di PSNR e SSIM ottenuti sui campioni del test set per ciascuna configurazione sperimentale.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{psnr_summary.png}
+    \caption{Confronto dei valori medi di PSNR ottenuti dai diversi metodi sulle quattro configurazioni sperimentali. Il metodo TV ottiene il valore migliore in tutte le configurazioni considerate.}
+    \label{fig:psnr_summary}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{ssim_summary.png}
+    \caption{Confronto dei valori medi di SSIM ottenuti dai diversi metodi sulle quattro configurazioni sperimentali. Anche in termini di similarità strutturale, la regolarizzazione TV risulta il metodo più stabile e competitivo.}
+    \label{fig:ssim_summary}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Confronto quantitativo tra Bicubic, TV e U-Net}
+\label{tab:results}
+\begin{tabular}{ccccc}
+\hline
+Metodo & Scala & Rumore & PSNR & SSIM \\
+\hline
+
+Bicubic & $\times 2$ & 0.005 & 32.17 & 0.927 \\
+TV & $\times 2$ & 0.005 & \textbf{32.37} & \textbf{0.933} \\
+U-Net & $\times 2$ & 0.005 & 32.23 & 0.928 \\
+
+\hline
+
+Bicubic & $\times 2$ & 0.01 & 31.61 & 0.899 \\
+TV & $\times 2$ & 0.01 & \textbf{32.17} & \textbf{0.924} \\
+U-Net & $\times 2$ & 0.01 & 31.65 & 0.901 \\
+
+\hline
+
+Bicubic & $\times 4$ & 0.005 & 26.26 & 0.800 \\
+TV & $\times 4$ & 0.005 & \textbf{26.57} & \textbf{0.802} \\
+U-Net & $\times 4$ & 0.005 & 26.50 & 0.802 \\
+
+\hline
+
+Bicubic & $\times 4$ & 0.01 & 26.11 & 0.774 \\
+TV & $\times 4$ & 0.01 & \textbf{26.56} & \textbf{0.801} \\
+U-Net & $\times 4$ & 0.01 & 26.35 & 0.778 \\
+
+\hline
+\end{tabular}
+\end{table}
+
+Dall’analisi quantitativa emerge chiaramente che il metodo basato su Total Variation ottiene le migliori prestazioni in tutte le configurazioni testate.
+
+In particolare, il miglioramento risulta più evidente nei casi con rumore più elevato (\(\sigma = 0.01\)), dove la regolarizzazione TV riesce a gestire in modo più efficace la componente rumorosa rispetto sia alla baseline bicubica sia alla rete U-Net.
+
+La U-Net mostra comunque prestazioni competitive e generalmente superiori alla semplice interpolazione bicubica, ma non riesce a superare il metodo variazionale nelle condizioni sperimentali considerate.
+
+\subsection{Analisi del caso \(\times 2\)}
+
+Nel caso di super-risoluzione con fattore \(\times 2\), il problema risulta relativamente meno complesso, poiché la perdita di informazione durante il downsampling è più contenuta.
+
+Con rumore basso (\(\sigma = 0.005\)), tutti i metodi ottengono valori elevati di PSNR e SSIM, con differenze relativamente ridotte.
+
+Quando il rumore aumenta (\(\sigma = 0.01\)), il vantaggio della TV diventa più evidente: il metodo riesce infatti a migliorare sia la qualità numerica sia la stabilità della ricostruzione, mostrando una maggiore robustezza rispetto agli altri approcci.
+
+\subsection{Analisi del caso \(\times 4\)}
+
+Nel caso \(\times 4\), la difficoltà del problema aumenta sensibilmente, poiché il downsampling comporta una perdita molto più severa di dettagli e informazioni ad alta frequenza.
+
+Come previsto, i valori di PSNR e SSIM diminuiscono per tutti i metodi.
+
+Anche in questo scenario, la TV mantiene le migliori prestazioni complessive, mentre la U-Net si avvicina ai risultati del metodo variazionale ma senza riuscire a superarlo.
+
+Questo comportamento conferma come, in presenza di forte degradazione e rumore moderato, la regolarizzazione esplicita possa risultare ancora estremamente efficace.
+
+\subsection{Risultati qualitativi}
+
+Dal punto di vista visivo, le differenze tra i metodi risultano particolarmente evidenti osservando dettagli locali come occhi, sopracciglia, capelli e texture della pelle.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{comparison_x4_noise0.01.png}
+    \caption{Confronto qualitativo tra ground truth, input degradato, interpolazione bicubica, TV e U-Net nel caso più severo considerato: fattore di super-risoluzione $\times 4$ e rumore gaussiano $\sigma = 0.01$. La TV mostra una maggiore robustezza al rumore, mentre la U-Net conserva risultati competitivi ma più sensibili ai limiti del training.}
+    \label{fig:comparison_x4}
+\end{figure}
+
+La baseline bicubica produce immagini generalmente più sfocate e meno definite, con una perdita evidente dei dettagli fini.
+
+Il metodo TV riesce a migliorare significativamente la nitidezza dei contorni e a ridurre il rumore, preservando in modo efficace la struttura globale del volto.
+
+Tuttavia, in alcune aree ad alta frequenza può comparire un leggero effetto di \textit{oversmoothing}, che riduce la naturalezza di alcune texture.
+
+La U-Net, invece, tende a preservare meglio alcuni dettagli locali e texture sottili, soprattutto nelle regioni dei capelli e del contorno degli occhi, ma mostra una maggiore sensibilità al rumore residuo e risultati meno stabili tra le diverse configurazioni.
+
+\subsection{Discussione}
+
+Un aspetto particolarmente interessante del progetto è che il metodo deep learning non ha superato il metodo variazionale classico.
+
+Questo risultato non rappresenta un fallimento della U-Net, ma evidenzia piuttosto due aspetti fondamentali:
+
+\begin{enumerate}
+    \item la Total Variation rappresenta ancora oggi una regolarizzazione estremamente forte e competitiva nei problemi di image restoration;
+    \item le prestazioni delle reti neurali dipendono fortemente dalla quantità di dati, dal tempo di training e dalla scelta degli iperparametri.
+\end{enumerate}
+
+Nel presente lavoro, per motivi computazionali, la U-Net è stata addestrata con un numero ridotto di epoche e su un sottoinsieme limitato del dataset.
+
+Un training più esteso avrebbe probabilmente consentito un miglioramento ulteriore delle prestazioni, potenzialmente riducendo il gap rispetto al metodo TV.
+
+Tuttavia, i risultati ottenuti mostrano chiaramente che, in questo specifico scenario, i metodi variazionali classici rimangono altamente competitivi anche rispetto ad approcci deep learning più complessi.
+
+\newpage
+\section{Conclusioni}
+
+In questo progetto è stato affrontato il problema della \textit{Super Resolution} su immagini facciali del dataset FFHQ, confrontando due approcci differenti appartenenti a due paradigmi distinti del Computational Imaging:
+
+\begin{itemize}
+    \item un metodo variazionale classico basato su \textit{Total Variation Regularization};
+    \item un metodo \textit{End-to-End} basato su rete neurale convoluzionale di tipo \textit{U-Net}.
+\end{itemize}
+
+Entrambi i metodi sono stati valutati nelle stesse condizioni sperimentali, utilizzando due fattori di super-risoluzione (\(\times 2\) e \(\times 4\)) e due livelli di rumore gaussiano (\(\sigma = 0.005\) e \(\sigma = 0.01\)), con confronto rispetto alla baseline di interpolazione bicubica.
+
+L’analisi quantitativa, effettuata mediante le metriche PSNR e SSIM, ha mostrato che il metodo basato su Total Variation ottiene le migliori prestazioni in tutte le configurazioni testate, risultando particolarmente efficace nei casi con rumore più elevato e nelle situazioni di degradazione più severa.
+
+Dal punto di vista qualitativo, la TV ha dimostrato una buona capacità di preservare i bordi e migliorare la nitidezza complessiva dell’immagine, pur presentando in alcuni casi un leggero effetto di \textit{oversmoothing} nelle texture più fini.
+
+La U-Net ha mostrato risultati competitivi e una buona capacità di recuperare dettagli locali, ma non è riuscita a superare il metodo variazionale nelle condizioni considerate. Questo comportamento è fortemente influenzato dalla limitata fase di training adottata nel progetto, resa necessaria dai vincoli computazionali dell’ambiente Colab e dalla natura individuale del lavoro.
+
+Uno degli aspetti più significativi emersi da questo studio è che i metodi variazionali classici, nonostante la crescente diffusione delle tecniche deep learning, possono ancora rappresentare una soluzione estremamente efficace e robusta nei problemi di image restoration.
+
+In particolare, quando il problema presenta rumore moderato, dataset limitati o risorse computazionali contenute, una buona regolarizzazione esplicita può risultare persino più performante di una rete neurale non completamente ottimizzata.
+
+Questo conferma come, nel Computational Imaging moderno, i metodi \textit{model-based} e quelli \textit{data-driven} non debbano essere considerati necessariamente alternativi, ma spesso complementari.
+
+Come possibili sviluppi futuri del lavoro si possono considerare:
+
+\begin{itemize}
+    \item un training più approfondito della U-Net con un numero maggiore di epoche;
+    \item l’utilizzo di loss functions percettive (\textit{perceptual loss});
+    \item il confronto con metodi ibridi come Plug-and-Play Priors o Diffusion-based restoration;
+    \item l’estensione del confronto a dataset non facciali o a problemi di deblurring e denoising più complessi.
+\end{itemize}
+
+In conclusione, il progetto ha permesso di evidenziare come, anche in un contesto dominato dal Deep Learning, i metodi variazionali ben progettati rimangano strumenti fondamentali e altamente competitivi nella risoluzione dei problemi inversi.
+
+\newpage
+\begin{thebibliography}{9}
+
+\bibitem{rof}
+L. Rudin, S. Osher, E. Fatemi,
+\textit{Nonlinear total variation based noise removal algorithms},
+Physica D, 1992.
+
+\bibitem{unet}
+O. Ronneberger, P. Fischer, T. Brox,
+\textit{U-Net: Convolutional Networks for Biomedical Image Segmentation},
+MICCAI, 2015.
+
+\bibitem{wang2004ssim}
+Z. Wang, A. Bovik, H. Sheikh, E. Simoncelli,
+\textit{Image quality assessment: From error visibility to structural similarity},
+IEEE Transactions on Image Processing, 2004.
+
+\bibitem{sr}
+C. Dong, C. C. Loy, K. He, X. Tang,
+\textit{Image Super-Resolution Using Deep Convolutional Networks},
+IEEE TPAMI, 2016.
+
+\end{thebibliography}
+
+\end{document}
