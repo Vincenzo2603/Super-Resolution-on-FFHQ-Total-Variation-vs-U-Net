@@ -2,8 +2,3 @@ devo aggiungere gli allegati in:
 results
 models
 sample outputs
-
----
-
-sistemare rendering notebook.
-aggiornare PP su github e aggiungere link repository su PP. 
