@@ -132,4 +132,3 @@ results/          → quantitative evaluation tables
 models/           → trained U-Net weights
 report/           → LaTeX report and PDF
 presentation/     → presentation slides
-sample_outputs/   → example reconstructions
