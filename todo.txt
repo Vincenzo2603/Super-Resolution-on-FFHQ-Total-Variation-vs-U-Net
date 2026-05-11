@@ -1,4 +1,0 @@
-devo aggiungere gli allegati in:
-results
-models
-sample outputs
